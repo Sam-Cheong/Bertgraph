@@ -2,3 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
+.venv39
+__pycache__/
+*.pyc
+.vscode
+requirements_current.txt

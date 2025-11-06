@@ -10,11 +10,12 @@ from torch.nn.utils import clip_grad_norm_
 from bert_tcr import BERT
 from pytorchtools import EarlyStopping
 from torch.utils.data import DataLoader,TensorDataset
+from typing import Any
 
 parser = argparse.ArgumentParser(description='train the tcr embedding model')
 
 # File dir
-parser.add_argument('--input', type=str, default="./data/train_tcr.csv", help='a csv with column "cdr3"')
+parser.add_argument('--input', type=str, default="./data/small_train_tcr.csv", help='a csv with column "cdr3"')
 parser.add_argument('--model_dir', type=str, default="./output/tcr_model.pt", help='output dir of model')
 
 # Hyperparameters
@@ -40,15 +41,14 @@ d_k = d_v = d_model*2  # dimension of K(=Q), V
 mask_P = 0.25 # mask possibility
 vocab_size = 23 # type of tokens
 
-# Determine if GPU is available
-if not torch.cuda.is_available():
-    raise ValueError("No available GPU")
-
-# Determine the number of available GPUs
-GPUs_used = args.GPUs
-GPUs_avail = torch.cuda.device_count()
-if GPUs_used > GPUs_avail:
-    raise ValueError("Available GPU({}) is less than the input value".format(GPUs_avail))
+# Device/GPU setup (robust): cap requested GPUs to available and allow CPU fallback
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+GPUs_avail = torch.cuda.device_count() if device.type == 'cuda' else 0
+GPUs_used = min(args.GPUs, GPUs_avail) if GPUs_avail > 0 else 0
+if args.GPUs > GPUs_avail:
+    print(f"Warning: requested {args.GPUs} GPUs, but only {GPUs_avail} available. Using {GPUs_used}.")
+if GPUs_used == 0 and device.type != 'cuda':
+    print("Warning: CUDA not available. Training will run on CPU and may be very slow.")
 
 # Load and Screening data
 cdr3_df = pd.read_csv(args.input)
@@ -61,7 +61,9 @@ val_cdr3s = all_cdr3s[-200000:]
 
 # a put-back selection of 1,000,000 bars TCR
 def get_random_cdr3(cdr3s, num = 1000000):
-    cdr3_indexs = random.sample(range(len(train_cdr3s)),num)
+    # Sample indices from the provided list to avoid dependency on global variable
+    num = min(num, len(cdr3s))
+    cdr3_indexs = random.sample(range(len(cdr3s)), num)
     random_cdr3s = []
     for index in cdr3_indexs:
         random_cdr3s.append(cdr3s[index])
@@ -117,16 +119,23 @@ def make_data(cdr3s):
     return loader
 
 # Initialization Model 
-model = BERT(n_layers=n_layers, d_model=d_model, \
+model: nn.Module = BERT(n_layers=n_layers, d_model=d_model, \
              n_heads=n_heads, vocab_size=vocab_size, maxlen=maxlen)
+
+# Helper to get proper state_dict whether wrapped in DataParallel or not
+def get_state_dict_for_saving(m: nn.Module) -> Any:
+    if isinstance(m, nn.DataParallel):
+        return m.module.state_dict()
+    return m.state_dict()
 
 # Run the main program
 if __name__ =="__main__":
 
-    # Data Parallelism
-    model = nn.DataParallel(model, list(range(GPUs_used))) 
-    model.cuda()
-    net_name = net_name = model.module.__class__.__name__
+    # Device/parallelism
+    if device.type == 'cuda' and GPUs_used > 1:
+        model = nn.DataParallel(model, device_ids=list(range(GPUs_used)))
+    model.to(device)
+    net_name = model.module.__class__.__name__ if hasattr(model, 'module') else model.__class__.__name__
 
     # Initializing hyperparameters
     BATCH_SIZE = args.batchsize
@@ -144,7 +153,7 @@ if __name__ =="__main__":
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # Initialized learning rate decay strategy and early stop strategy
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode="min", factor=0.3, patience=2, verbose = True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.3, patience=2)
     early_stopping = EarlyStopping(patience=4,verbose=True)
     
     # Create the Dataloader for the validation set 
@@ -168,8 +177,10 @@ if __name__ =="__main__":
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = lr*SUM_step/MAX_step
 
-            # Transferring matrices to the GPU        
-            input_ids, masked_tokens, masked_pos = input_ids.cuda(), masked_tokens.cuda(), masked_pos.cuda()
+            # Move tensors to device
+            input_ids = input_ids.to(device)
+            masked_tokens = masked_tokens.to(device)
+            masked_pos = masked_pos.to(device)
 
             logits_lm, _ = model(input_ids, masked_pos)
             loss_lm = criterion(logits_lm.view(-1, 23), masked_tokens.view(-1))
@@ -193,7 +204,9 @@ if __name__ =="__main__":
         # No gradient calculation
         with torch.no_grad():
             for val_step,  (input_ids, masked_tokens, masked_pos) in enumerate(val_loader):
-                input_ids, masked_tokens, masked_pos = input_ids.cuda(), masked_tokens.cuda(), masked_pos.cuda()
+                input_ids = input_ids.to(device)
+                masked_tokens = masked_tokens.to(device)
+                masked_pos = masked_pos.to(device)
 
                 logits_lm, _ = model(input_ids, masked_pos)
                 loss_lm = criterion(logits_lm.view(-1, 23), masked_tokens.view(-1))
@@ -214,7 +227,7 @@ if __name__ =="__main__":
             print("early stop")
             break
 
-        # save the model
-        torch.save(model.state_dict(), args.model_dir)
+    # save the model (handle DataParallel wrapper)
+    torch.save(get_state_dict_for_saving(model), args.model_dir)
 
 
