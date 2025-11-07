@@ -27,7 +27,7 @@ parser.add_argument('--lr', type=float, default=5e-5, help='learning rate')
 parser.add_argument('--max_epoch', type=int, default=100)
 
 # GPUs
-parser.add_argument('--GPUs', type=int, default=2, help='num of GPUs used in this task')
+parser.add_argument('--GPUs', type=int, default=1, help='num of GPUs used in this task')
 
 args = parser.parse_args()
 

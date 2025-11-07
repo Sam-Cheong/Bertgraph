@@ -189,6 +189,7 @@ class ImmuneBERTOptimized(nn.Module):
             "wukevin/tcr-bert-mlm-only",
             "wukevin/foldingdiff_cath",
             "facebook/esm2_t6_8M_UR50D"
+            "./results/my_tcr_bert.pt"  # Local checkpoint
         ]
 
         loaded = False

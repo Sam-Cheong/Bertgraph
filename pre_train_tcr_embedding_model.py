@@ -154,7 +154,8 @@ if __name__ =="__main__":
 
     # Initialized learning rate decay strategy and early stop strategy
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.3, patience=2)
-    early_stopping = EarlyStopping(patience=4,verbose=True)
+    # Make EarlyStopping write the best model checkpoint to the path provided by --model_dir
+    early_stopping = EarlyStopping(patience=4, verbose=True, path=args.model_dir)
     
     # Create the Dataloader for the validation set 
     val_loader = make_data(val_cdr3s)
@@ -227,7 +228,9 @@ if __name__ =="__main__":
             print("early stop")
             break
 
-    # save the model (handle DataParallel wrapper)
-    torch.save(get_state_dict_for_saving(model), args.model_dir)
+    # save the final model (handle DataParallel wrapper)
+    # Note: EarlyStopping already saves the best checkpoint to `args.model_dir` during training.
+    # Here we save the last model state to a different file to avoid overwriting the best checkpoint.
+    torch.save(get_state_dict_for_saving(model), args.model_dir + ".last.pt")
 
 
